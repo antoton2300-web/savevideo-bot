@@ -54,12 +54,18 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         os.makedirs(f'downloads/{user_id}', exist_ok=True)
         
         # Настройки для скачивания
-        ydl_opts = {
-            'format': 'best[ext=mp4]/best',
-            'outtmpl': f'downloads/{user_id}/%(title)s.%(ext)s',
-            'quiet': True,
-            'socket_timeout': 30,
-        }
+    ydl_opts = {
+        'format': 'best[ext=mp4]/best',
+        'outtmpl': f'downloads/{user_id}%(title)s.%(ext)s',
+        'quiet': True,
+        'socket_timeout': 30,
+        # Настройки для сохранения звука
+        'postprocessors': [{
+            'key': 'FFmpegVideoConvertor',
+            'preferedformat': 'mp4',
+        }],
+        'merge_output_format': 'mp4',
+    }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             # Скачиваем видео
@@ -666,5 +672,6 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
