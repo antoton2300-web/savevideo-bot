@@ -287,10 +287,10 @@ async def show_commands_menu(query):
         "• В категории можно удалить любое видео\n\n"
         
         "🔹 <b>ПРИМЕРЫ ССЫЛОК:</b>\n"
-        "• Instagram: https://www.instagram.com/reel/...\n"
-        "• TikTok: https://vt.tiktok.com/...\n"
-        "• YouTube: https://youtu.be/...\n"
-        "• Pinterest: https://pin.it/...\n\n"
+        "• Instagram: instagram.com/reel/...\n"
+        "• TikTok: tiktok.com/@user/video/...\n"
+        "• YouTube: youtu.be/...\n"
+        "• Pinterest: pin.it/...\n\n"
         
         "❓ <b>Нужна помощь?</b> Напиши /help"
     )
@@ -301,10 +301,12 @@ async def show_commands_menu(query):
         [InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]
     ]
     
+    # ВАЖНО: добавляем disable_web_page_preview=True
     await query.edit_message_text(
         commands_text,
         reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML'
+        parse_mode='HTML',
+        disable_web_page_preview=True  # Эта строчка отключает превью ссылок
     )
 
 # ================== ПОКАЗ КАТЕГОРИЙ ==================
@@ -664,4 +666,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
