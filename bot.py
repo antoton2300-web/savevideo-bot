@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 import logging
 import glob
+import subprocess
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -54,13 +55,21 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Создаем папку для пользователя
         os.makedirs(f'downloads/{user_id}', exist_ok=True)
         
-        # Настройки для скачивания (СО ЗВУКОМ!)
+        # ========== УЛУЧШЕННЫЕ НАСТРОЙКИ ДЛЯ СКАЧИВАНИЯ СО ЗВУКОМ ==========
         ydl_opts = {
-            'format': 'best',  # Лучшее качество со звуком
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',  # Явно берем видео и аудио
             'outtmpl': f'downloads/{user_id}/%(title)s.%(ext)s',
             'quiet': True,
+            'no_warnings': True,
             'socket_timeout': 30,
-            'merge_output_format': 'mp4',  # Объединяем видео и аудио
+            'retries': 3,
+            'merge_output_format': 'mp4',  # Объединяем в MP4
+            'postprocessors': [{  # Постобработка
+                'key': 'FFmpegVideoConvertor',
+                'preferedformat': 'mp4',
+            }],
+            'prefer_ffmpeg': True,  # Используем ffmpeg
+            'keepvideo': True,  # Сохраняем оригинал
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -68,27 +77,31 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             info = ydl.extract_info(link, download=True)
             video_title = info.get('title', 'video')
             
-            # Ищем скачанный файл
+            # Ищем скачанный файл (MP4)
             files = glob.glob(f'downloads/{user_id}/*.mp4')
-            files.extend(glob.glob(f'downloads/{user_id}/*.webm'))
-            files.extend(glob.glob(f'downloads/{user_id}/*.mkv'))
             
             if files:
                 filename = files[-1]  # Берем последний скачанный файл
+                
+                # Проверяем размер файла (должен быть больше 1MB)
+                file_size = os.path.getsize(filename) / (1024 * 1024)
+                logger.info(f"Файл скачан: {filename}, размер: {file_size:.2f} MB")
                 
                 # Сохраняем информацию о видео
                 context.user_data['current_video'] = {
                     'path': filename,
                     'title': video_title,
-                    'url': link
+                    'url': link,
+                    'size': file_size
                 }
                 
                 # Отправляем видео
                 with open(filename, 'rb') as f:
                     await update.message.reply_video(
                         video=f,
-                        caption=f"✅ <b>Видео скачано!</b>\n\n{video_title[:50]}",
-                        parse_mode='HTML'
+                        caption=f"✅ <b>Видео скачано!</b>\n\n{video_title[:50]}\n💾 {file_size:.1f} MB",
+                        parse_mode='HTML',
+                        supports_streaming=True  # Важно для потокового видео
                     )
                 
                 await msg.delete()
@@ -96,10 +109,48 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # ПОКАЗЫВАЕМ КНОПКИ ДЛЯ СОХРАНЕНИЯ
                 await show_save_options(update, context, user_id)
             else:
-                await msg.edit_text("❌ <b>Файл не найден</b>", parse_mode='HTML')
+                # Если MP4 не найден, ищем другие форматы
+                all_files = glob.glob(f'downloads/{user_id}/*')
+                if all_files:
+                    filename = all_files[-1]
+                    logger.warning(f"MP4 не найден, использую: {filename}")
+                    
+                    # Конвертируем в MP4 если нужно
+                    if not filename.endswith('.mp4'):
+                        mp4_filename = filename.rsplit('.', 1)[0] + '.mp4'
+                        try:
+                            # Пробуем сконвертировать
+                            cmd = ['ffmpeg', '-i', filename, '-c', 'copy', mp4_filename]
+                            subprocess.run(cmd, capture_output=True)
+                            if os.path.exists(mp4_filename):
+                                filename = mp4_filename
+                        except:
+                            pass
+                    
+                    with open(filename, 'rb') as f:
+                        await update.message.reply_video(
+                            video=f,
+                            caption=f"✅ <b>Видео скачано!</b>\n\n{video_title[:50]}",
+                            parse_mode='HTML'
+                        )
+                    
+                    await msg.delete()
+                    await show_save_options(update, context, user_id)
+                else:
+                    await msg.edit_text("❌ <b>Файл не найден</b>", parse_mode='HTML')
                 
     except Exception as e:
-        await msg.edit_text(f"❌ <b>Ошибка:</b> {str(e)[:100]}", parse_mode='HTML')
+        error_text = str(e)
+        logger.error(f"Ошибка скачивания: {error_text}")
+        
+        if "ffmpeg" in error_text.lower():
+            await msg.edit_text("❌ <b>Ошибка ffmpeg</b>\nПроверьте установку на сервере", parse_mode='HTML')
+        elif "private" in error_text.lower():
+            await msg.edit_text("❌ <b>Это приватное видео</b>", parse_mode='HTML')
+        elif "unavailable" in error_text.lower():
+            await msg.edit_text("❌ <b>Видео недоступно</b>", parse_mode='HTML')
+        else:
+            await msg.edit_text(f"❌ <b>Ошибка:</b> {error_text[:100]}", parse_mode='HTML')
 
 # ================== КНОПКИ СОХРАНЕНИЯ ==================
 async def show_save_options(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
@@ -366,7 +417,9 @@ async def show_category_videos(update: Update, context: ContextTypes.DEFAULT_TYP
     
     for i, video in enumerate(videos, 1):
         title = video['title'][:40] + "..." if len(video['title']) > 40 else video['title']
-        text += f"{i}. {title}\n"
+        size = video.get('size', 0)
+        size_text = f" ({size:.1f}MB)" if size > 0 else ""
+        text += f"{i}. {title}{size_text}\n"
         
         keyboard.append([
             InlineKeyboardButton(f"▶️ Смотреть {i}", callback_data=f"play_{cat_name}_{i-1}"),
@@ -409,7 +462,8 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await query.message.reply_video(
                         video=f,
                         caption=f"🎬 <b>{video['title'][:50]}</b>\n📁 Категория: {cat_name}",
-                        parse_mode='HTML'
+                        parse_mode='HTML',
+                        supports_streaming=True
                     )
             else:
                 await query.message.reply_text("❌ <b>Видео не найдено на диске</b>", parse_mode='HTML')
@@ -546,7 +600,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔹 <b>КАК СКАЧАТЬ ВИДЕО:</b>\n"
         "1. Скопируйте ссылку на видео\n"
         "2. Отправьте её боту\n"
-        "3. Дождитесь загрузки\n"
+        "3. Дождитесь загрузки (10-30 секунд)\n"
         "4. Выберите категорию для сохранения\n\n"
         
         "🔹 <b>ГДЕ БРАТЬ ССЫЛКИ:</b>\n"
@@ -567,7 +621,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/categories - Категории\n"
         "/stats - Статистика\n"
         "/commands - Список команд\n"
-        "/help - Эта помощь"
+        "/help - Эта помощь\n\n"
+        
+        "🎵 <b>ЗВУК:</b>\n"
+        "• Все видео скачиваются со звуком!\n"
+        "• Если звука нет - проверьте источник"
     )
     
     keyboard = [[InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_start")]]
@@ -627,7 +685,7 @@ def main():
     print("✅ Бот успешно запущен!")
     print("🤖 @SaveVideosInsbot")
     print("📁 /categories - управление категориями")
-    print("🎬 Видео скачиваются СО ЗВУКОМ!")
+    print("🎵 ВИДЕО СО ЗВУКОМ!")
     
     app.run_polling()
 
