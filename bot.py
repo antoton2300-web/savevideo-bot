@@ -22,6 +22,7 @@ os.environ['REQUESTS_CA_BUNDLE'] = certifi.where()
 # Хранилище данных пользователей
 user_categories = {}  # {user_id: [список категорий]}
 user_videos = {}      # {user_id: {категория: [список видео]}}
+user_audios = {}      # {user_id: {категория: [список аудио]}}
 
 # ================== КОМАНДА СТАРТ ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -33,201 +34,202 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     
     await update.message.reply_text(
-        "👋 <b>Привет! Я бот для скачивания видео</b>\n\n"
+        "👋 <b>Привет! Я бот для скачивания видео и музыки</b>\n\n"
         "📱 <b>Что я умею:</b>\n"
         "• Скачивать видео из Instagram, TikTok, Pinterest, YouTube\n"
-        "• Сохранять видео в категории\n"
+        "• Отправлять видео, а потом отдельно музыку (MP3)\n"
+        "• Сохранять видео и музыку в категории\n"
         "• Управлять категориями\n"
-        "• Удалять отдельные видео\n\n"
+        "• Удалять отдельные файлы\n\n"
         "🔽 <b>Выберите действие:</b>",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
     )
 
-# ================== СКАЧИВАНИЕ ВИДЕО ==================
+# ================== СКАЧИВАНИЕ ВИДЕО И АУДИО ==================
 async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработка ссылок на видео"""
+    """Обработка ссылок на видео - отправляет видео, потом аудио"""
     link = update.message.text
     user_id = update.effective_user.id
     
-    msg = await update.message.reply_text("⏳ <b>Скачиваю видео...</b>", parse_mode='HTML')
+    msg = await update.message.reply_text("⏳ <b>Скачиваю видео и аудио...</b>", parse_mode='HTML')
     
     try:
         # Создаем папку для пользователя
         os.makedirs(f'downloads/{user_id}', exist_ok=True)
         
-        # ==== ОПТИМАЛЬНЫЕ НАСТРОЙКИ ДЛЯ ВСЕХ ПЛАТФОРМ СО ЗВУКОМ ====
-        ydl_opts = {
-            # Формат: лучшее видео + лучшее аудио, объединяем
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
-            'outtmpl': f'downloads/{user_id}/%(title)s.%(ext)s',
+        # ===== ШАГ 1: СКАЧИВАЕМ ВИДЕО =====
+        video_opts = {
+            'format': 'best[ext=mp4]/best',  # Лучшее видео
+            'outtmpl': f'downloads/{user_id}/video_%(title)s.%(ext)s',
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
-            'retries': 5,
-            
-            # Объединение видео и аудио
-            'merge_output_format': 'mp4',
-            'postprocessors': [{
-                'key': 'FFmpegVideoConvertor',
-                'preferedformat': 'mp4',
-            }],
-            
-            # Дополнительные настройки для TikTok/Instagram
-            'prefer_ffmpeg': True,
-            'keepvideo': False,
-            'extract_flat': False,
-            'force_generic_extractor': False,
-            
-            # User-Agent как у браузера
-            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            # Скачиваем видео
+        video_filename = None
+        audio_filename = None
+        video_title = "video"
+        
+        with yt_dlp.YoutubeDL(video_opts) as ydl:
             info = ydl.extract_info(link, download=True)
             video_title = info.get('title', 'video')
             
-            # Даем время на объединение файлов
-            time.sleep(2)
-            
-            # Ищем все возможные видео файлы
-            video_files = []
-            video_files.extend(glob.glob(f'downloads/{user_id}/*.mp4'))
-            video_files.extend(glob.glob(f'downloads/{user_id}/*.mkv'))
-            video_files.extend(glob.glob(f'downloads/{user_id}/*.webm'))
-            
+            # Ищем скачанный видеофайл
+            video_files = glob.glob(f'downloads/{user_id}/video_*.mp4')
             if video_files:
-                # Берем самый свежий файл
-                filename = max(video_files, key=os.path.getctime)
-                file_size = os.path.getsize(filename) / (1024 * 1024)
-                
-                # Проверяем есть ли звук в файле
-                has_audio = check_audio_in_video(filename)
-                logger.info(f"Файл: {filename}, размер: {file_size:.1f}MB, звук: {has_audio}")
-                
-                # Если нет звука, пробуем альтернативный метод
-                if not has_audio and 'tiktok' in link.lower():
-                    await msg.edit_text("🔄 <b>Пробую специальный метод для TikTok...</b>", parse_mode='HTML')
-                    
-                    # Специальные настройки для TikTok
-                    tiktok_opts = {
-                        'format': 'best',  # Просто лучшее что есть
-                        'outtmpl': f'downloads/{user_id}/tiktok_video.%(ext)s',
-                        'quiet': True,
-                        'socket_timeout': 30,
-                    }
-                    
-                    with yt_dlp.YoutubeDL(tiktok_opts) as ydl2:
-                        info2 = ydl2.extract_info(link, download=True)
-                        tiktok_files = glob.glob(f'downloads/{user_id}/tiktok_video.*')
-                        if tiktok_files:
-                            filename = tiktok_files[0]
-                            file_size = os.path.getsize(filename) / (1024 * 1024)
-                            has_audio = check_audio_in_video(filename)
-                
-                # Сохраняем информацию о видео
-                context.user_data['current_video'] = {
-                    'path': filename,
-                    'title': video_title,
-                    'url': link,
-                    'size': file_size,
-                    'has_audio': has_audio
-                }
-                
-                # Отправляем видео
-                audio_status = "🔊 со звуком" if has_audio else "🔇 без звука"
-                with open(filename, 'rb') as f:
-                    await update.message.reply_video(
-                        video=f,
-                        caption=f"✅ <b>Видео скачано!</b>\n\n"
-                                f"📹 {video_title[:50]}\n"
-                                f"💾 {file_size:.1f} MB\n"
-                                f"{audio_status}",
-                        parse_mode='HTML',
-                        supports_streaming=True
-                    )
-                
-                await msg.delete()
-                await show_save_options(update, context, user_id)
-            else:
-                await msg.edit_text("❌ <b>Файл не найден</b>", parse_mode='HTML')
-                
+                video_filename = video_files[-1]
+                logger.info(f"Видео скачано: {video_filename}")
+        
+        # ===== ШАГ 2: СКАЧИВАЕМ ТОЛЬКО АУДИО =====
+        audio_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': f'downloads/{user_id}/audio_%(title)s.%(ext)s',
+            'quiet': True,
+            'no_warnings': True,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+        
+        with yt_dlp.YoutubeDL(audio_opts) as ydl:
+            # Скачиваем аудио
+            info2 = ydl.extract_info(link, download=True)
+            
+            # Ищем скачанный аудиофайл
+            time.sleep(1)  # Ждем конвертации
+            audio_files = glob.glob(f'downloads/{user_id}/audio_*.mp3')
+            if audio_files:
+                audio_filename = audio_files[-1]
+                logger.info(f"Аудио скачано: {audio_filename}")
+        
+        # ===== ШАГ 3: ОТПРАВЛЯЕМ СНАЧАЛА ВИДЕО, ПОТОМ АУДИО =====
+        if video_filename and os.path.exists(video_filename):
+            video_size = os.path.getsize(video_filename) / (1024 * 1024)
+            
+            # Отправляем видео
+            with open(video_filename, 'rb') as f:
+                await update.message.reply_video(
+                    video=f,
+                    caption=f"🎬 <b>Видео</b>\n\n{video_title[:50]}\n💾 {video_size:.1f} MB",
+                    parse_mode='HTML',
+                    supports_streaming=True
+                )
+            
+            # Сохраняем видео в контекст
+            context.user_data['current_video'] = {
+                'path': video_filename,
+                'title': f"{video_title} (видео)",
+                'url': link,
+                'type': 'video',
+                'size': video_size
+            }
+        
+        if audio_filename and os.path.exists(audio_filename):
+            audio_size = os.path.getsize(audio_filename) / (1024 * 1024)
+            
+            # Отправляем аудио отдельно
+            with open(audio_filename, 'rb') as f:
+                await update.message.reply_audio(
+                    audio=f,
+                    title=video_title,
+                    performer="Из видео",
+                    caption=f"🎵 <b>Аудио (MP3)</b>\n\n{ video_title[:50]}\n💾 {audio_size:.1f} MB",
+                    parse_mode='HTML'
+                )
+            
+            # Сохраняем аудио в контекст
+            context.user_data['current_audio'] = {
+                'path': audio_filename,
+                'title': f"{video_title} (аудио)",
+                'url': link,
+                'type': 'audio',
+                'size': audio_size
+            }
+        
+        await msg.delete()
+        
+        # ===== ШАГ 4: ПРЕДЛАГАЕМ СОХРАНИТЬ В КАТЕГОРИИ =====
+        await show_save_options_both(update, context, user_id)
+        
     except Exception as e:
         error_text = str(e)
         logger.error(f"Ошибка скачивания: {error_text}")
-        
-        # Пробуем последний простой метод
-        if "ffmpeg" in error_text.lower() or "audio" in error_text.lower():
-            await msg.edit_text("🔄 <b>Пробую простой метод...</b>", parse_mode='HTML')
-            try:
-                simple_opts = {
-                    'format': 'best',
-                    'outtmpl': f'downloads/{user_id}/video.%(ext)s',
-                    'quiet': True,
-                }
-                with yt_dlp.YoutubeDL(simple_opts) as ydl:
-                    info = ydl.extract_info(link, download=True)
-                    files = glob.glob(f'downloads/{user_id}/*.mp4')
-                    if files:
-                        filename = files[-1]
-                        with open(filename, 'rb') as f:
-                            await update.message.reply_video(f, caption="✅ Видео скачано!")
-                        await msg.delete()
-                        await show_save_options(update, context, user_id)
-                    else:
-                        await msg.edit_text("❌ <b>Не удалось скачать</b>", parse_mode='HTML')
-            except:
-                await msg.edit_text("❌ <b>Видео недоступно</b>\nПроверьте ссылку", parse_mode='HTML')
-        else:
-            await msg.edit_text(f"❌ <b>Ошибка:</b> {error_text[:100]}", parse_mode='HTML')
+        await msg.edit_text(f"❌ <b>Ошибка:</b> {error_text[:100]}", parse_mode='HTML')
 
-# ================== ПРОВЕРКА НАЛИЧИЯ ЗВУКА ==================
-def check_audio_in_video(filename):
-    """Проверяет есть ли аудио дорожка в видео"""
-    try:
-        cmd = [
-            'ffprobe', '-i', filename,
-            '-show_streams', '-select_streams', 'a',
-            '-loglevel', 'error'
-        ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-        return bool(result.stdout.strip())
-    except:
-        return False
-
-# ================== КНОПКИ СОХРАНЕНИЯ ==================
-async def show_save_options(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
-    """Показывает кнопки для сохранения видео в категорию"""
+# ================== КНОПКИ СОХРАНЕНИЯ (ДЛЯ ВИДЕО И АУДИО) ==================
+async def show_save_options_both(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
+    """Показывает кнопки для сохранения видео и аудио"""
     
     # Инициализируем данные пользователя
     if user_id not in user_categories:
         user_categories[user_id] = []
     if user_id not in user_videos:
         user_videos[user_id] = {}
+    if user_id not in user_audios:
+        user_audios[user_id] = {}
     
+    has_video = 'current_video' in context.user_data
+    has_audio = 'current_audio' in context.user_data
+    
+    text = "💾 <b>Что сохранить?</b>\n\n"
     keyboard = []
+    
+    if has_video:
+        text += "🎬 Видео доступно для сохранения\n"
+    if has_audio:
+        text += "🎵 Аудио (MP3) доступно для сохранения\n"
+    
+    text += "\nВыберите категорию:"
     
     # Кнопки существующих категорий
     for cat in user_categories[user_id]:
-        count = len(user_videos[user_id].get(cat, []))
+        video_count = len(user_videos[user_id].get(cat, []))
+        audio_count = len(user_audios[user_id].get(cat, []))
         keyboard.append([InlineKeyboardButton(
-            f"📁 {cat} ({count} видео)", 
-            callback_data=f"save_{cat}"
+            f"📁 {cat} (🎬{video_count} 🎵{audio_count})", 
+            callback_data=f"choose_cat_{cat}"
         )])
     
     # Кнопки действий
     keyboard.append([
-        InlineKeyboardButton("➕ Новая категория", callback_data="new_category"),
-        InlineKeyboardButton("⏭ Пропустить", callback_data="skip_save")
+        InlineKeyboardButton("➕ Новая категория", callback_data="new_category_both"),
+        InlineKeyboardButton("⏭ Пропустить всё", callback_data="skip_all")
     ])
     
     # Кнопка помощи
     keyboard.append([InlineKeyboardButton("❓ Помощь", callback_data="show_commands")])
     
     await update.message.reply_text(
-        "💾 <b>Сохранить видео?</b>\n\n"
-        "Выберите категорию или создайте новую:",
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+# ================== ВЫБОР КАТЕГОРИИ ДЛЯ СОХРАНЕНИЯ ==================
+async def choose_category_for_save(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, cat_name):
+    """Показывает что сохранить в выбранную категорию"""
+    query = update.callback_query
+    
+    has_video = 'current_video' in context.user_data
+    has_audio = 'current_audio' in context.user_data
+    
+    keyboard = []
+    
+    if has_video:
+        keyboard.append([InlineKeyboardButton("🎬 Сохранить видео", callback_data=f"save_video_{cat_name}")])
+    if has_audio:
+        keyboard.append([InlineKeyboardButton("🎵 Сохранить аудио", callback_data=f"save_audio_{cat_name}")])
+    if has_video and has_audio:
+        keyboard.append([InlineKeyboardButton("🎬🎵 Сохранить всё", callback_data=f"save_both_{cat_name}")])
+    
+    keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="back_to_save_options")])
+    
+    await query.edit_message_text(
+        f"📁 <b>Категория: {cat_name}</b>\n\n"
+        f"Что хотите сохранить?",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
     )
@@ -256,48 +258,97 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await show_stats(update, context)
         return
     
-    # Удаляем сообщение с кнопками для остальных действий
-    await query.message.delete()
+    elif data == "back_to_save_options":
+        await query.message.delete()
+        await show_save_options_both(update, context, user_id)
+        return
     
-    # ===== СОХРАНЕНИЕ ВИДЕО =====
-    if data == "skip_save":
-        await query.message.reply_text("⏭ <b>Видео не сохранено</b>", parse_mode='HTML')
+    # ===== СОХРАНЕНИЕ В КАТЕГОРИИ =====
+    if data == "skip_all":
+        await query.message.delete()
+        await query.message.reply_text("⏭ <b>Файлы не сохранены</b>", parse_mode='HTML')
         context.user_data.pop('current_video', None)
+        context.user_data.pop('current_audio', None)
     
-    elif data == "new_category":
+    elif data == "new_category_both":
+        await query.message.delete()
         await query.message.reply_text(
             "✏️ <b>Введите название новой категории:</b>",
             parse_mode='HTML'
         )
-        context.user_data['waiting_for_category'] = True
+        context.user_data['waiting_for_category_both'] = True
     
-    elif data.startswith("save_"):
-        cat_name = data[5:]
+    elif data.startswith("choose_cat_"):
+        cat_name = data[11:]  # убираем "choose_cat_"
+        await query.message.delete()
+        await choose_category_for_save(update, context, user_id, cat_name)
+    
+    elif data.startswith("save_video_"):
+        cat_name = data[11:]  # убираем "save_video_"
         current_video = context.user_data.get('current_video')
         
         if current_video:
             if cat_name not in user_videos[user_id]:
                 user_videos[user_id][cat_name] = []
-            
             user_videos[user_id][cat_name].append(current_video)
             
-            await query.message.reply_text(
-                f"✅ <b>Видео сохранено в категорию</b> «{cat_name}»\n\n"
-                f"📁 /categories - управлять категориями",
+            await query.message.edit_text(
+                f"✅ <b>Видео сохранено</b> в категорию «{cat_name}»",
                 parse_mode='HTML'
             )
-        else:
-            await query.message.reply_text("❌ <b>Ошибка: видео не найдено</b>", parse_mode='HTML')
+            context.user_data.pop('current_video', None)
+    
+    elif data.startswith("save_audio_"):
+        cat_name = data[11:]  # убираем "save_audio_"
+        current_audio = context.user_data.get('current_audio')
         
-        context.user_data.pop('current_video', None)
+        if current_audio:
+            if cat_name not in user_audios[user_id]:
+                user_audios[user_id][cat_name] = []
+            user_audios[user_id][cat_name].append(current_audio)
+            
+            await query.message.edit_text(
+                f"✅ <b>Аудио сохранено</b> в категорию «{cat_name}»",
+                parse_mode='HTML'
+            )
+            context.user_data.pop('current_audio', None)
+    
+    elif data.startswith("save_both_"):
+        cat_name = data[10:]  # убираем "save_both_"
+        saved = []
+        
+        current_video = context.user_data.get('current_video')
+        if current_video:
+            if cat_name not in user_videos[user_id]:
+                user_videos[user_id][cat_name] = []
+            user_videos[user_id][cat_name].append(current_video)
+            saved.append("видео")
+            context.user_data.pop('current_video', None)
+        
+        current_audio = context.user_data.get('current_audio')
+        if current_audio:
+            if cat_name not in user_audios[user_id]:
+                user_audios[user_id][cat_name] = []
+            user_audios[user_id][cat_name].append(current_audio)
+            saved.append("аудио")
+            context.user_data.pop('current_audio', None)
+        
+        await query.message.edit_text(
+            f"✅ <b>Сохранено:</b> {', '.join(saved)} в категорию «{cat_name}»",
+            parse_mode='HTML'
+        )
     
     # ===== УПРАВЛЕНИЕ КАТЕГОРИЯМИ =====
     elif data == "back_to_categories":
         await show_categories(update, context)
     
-    elif data.startswith("view_"):
-        cat_name = data[5:]
+    elif data.startswith("view_videos_"):
+        cat_name = data[12:]
         await show_category_videos(update, context, user_id, cat_name)
+    
+    elif data.startswith("view_audios_"):
+        cat_name = data[11:]
+        await show_category_audios(update, context, user_id, cat_name)
     
     elif data.startswith("rename_"):
         cat_name = data[7:]
@@ -311,104 +362,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("delete_"):
         cat_name = data[7:]
         await delete_category(update, context, user_id, cat_name)
-    
-    # ===== УДАЛЕНИЕ ОТДЕЛЬНОГО ВИДЕО =====
-    elif data.startswith("delvideo_"):
-        parts = data.split('_')
-        cat_name = '_'.join(parts[1:-1])
-        index = int(parts[-1])
-        await delete_single_video(update, context, user_id, cat_name, index)
-
-# ================== УДАЛЕНИЕ ОДНОГО ВИДЕО ==================
-async def delete_single_video(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, cat_name, video_index):
-    """Удаляет одно конкретное видео из категории"""
-    
-    if (user_id in user_videos and 
-        cat_name in user_videos[user_id] and 
-        video_index < len(user_videos[user_id][cat_name])):
-        
-        video = user_videos[user_id][cat_name][video_index]
-        video_title = video['title']
-        
-        # Удаляем файл с диска
-        try:
-            if os.path.exists(video['path']):
-                os.remove(video['path'])
-        except:
-            pass
-        
-        # Удаляем из списка
-        user_videos[user_id][cat_name].pop(video_index)
-        
-        if not user_videos[user_id][cat_name]:
-            keyboard = [
-                [InlineKeyboardButton(f"🗑️ Удалить пустую категорию", callback_data=f"delete_{cat_name}")],
-                [InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")]
-            ]
-            await update.callback_query.message.reply_text(
-                f"✅ <b>Видео «{video_title[:30]}» удалено</b>\n\n"
-                f"📁 Категория «{cat_name}» теперь пуста. Хотите удалить её?",
-                reply_markup=InlineKeyboardMarkup(keyboard),
-                parse_mode='HTML'
-            )
-        else:
-            await show_category_videos(update, context, user_id, cat_name)
-    else:
-        await update.callback_query.message.reply_text("❌ <b>Видео не найдено</b>", parse_mode='HTML')
-
-# ================== МЕНЮ КОМАНД ==================
-async def show_commands_menu(query):
-    """Показывает меню со всеми командами"""
-    
-    commands_text = (
-        "📋 <b>ВСЕ КОМАНДЫ БОТА</b>\n\n"
-        
-        "🔹 <b>ОСНОВНЫЕ:</b>\n"
-        "• /start - Главное меню\n"
-        "• /help - Подробная помощь\n"
-        "• /commands - Это меню\n\n"
-        
-        "🔹 <b>КАТЕГОРИИ:</b>\n"
-        "• /categories - Управление категориями\n"
-        "• /stats - Моя статистика\n\n"
-        
-        "🔹 <b>БЫСТРЫЕ ДЕЙСТВИЯ:</b>\n"
-        "• Отправь ссылку - скачать видео\n"
-        "• После скачивания выбери категорию\n"
-        "• В категории можно удалить любое видео\n\n"
-        
-        "🔹 <b>ПРИМЕРЫ ССЫЛОК:</b>\n"
-        "• Instagram: instagram.com/reel/...\n"
-        "• TikTok: tiktok.com/@user/video/...\n"
-        "• YouTube: youtu.be/...\n"
-        "• Pinterest: pin.it/...\n\n"
-        
-        "🔹 <b>ЗВУК:</b>\n"
-        "• Все видео скачиваются СО ЗВУКОМ!\n"
-        "• TikTok видео объединяются автоматически\n\n"
-        
-        "❓ <b>Нужна помощь?</b> Напиши /help"
-    )
-    
-    keyboard = [
-        [InlineKeyboardButton("📁 К категориям", callback_data="go_to_categories")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]
-    ]
-    
-    await query.edit_message_text(
-        commands_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML',
-        disable_web_page_preview=True
-    )
 
 # ================== ПОКАЗ КАТЕГОРИЙ ==================
 async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает все категории с кнопками управления"""
     user_id = update.effective_user.id
     
-    if user_id not in user_categories or not user_categories[user_id]:
+    if (user_id not in user_categories or not user_categories[user_id]) and \
+       (user_id not in user_videos or not user_videos[user_id]) and \
+       (user_id not in user_audios or not user_audios[user_id]):
+        
         keyboard = [
             [InlineKeyboardButton("📋 Команды", callback_data="show_commands")],
             [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_start")]
@@ -424,12 +387,22 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "📁 <b>Ваши категории:</b>\n\n"
     keyboard = []
     
-    for i, cat in enumerate(user_categories[user_id], 1):
-        count = len(user_videos[user_id].get(cat, []))
-        text += f"{i}. <b>{cat}</b> — {count} видео\n"
+    for cat in user_categories[user_id]:
+        video_count = len(user_videos[user_id].get(cat, [])) if user_id in user_videos else 0
+        audio_count = len(user_audios[user_id].get(cat, [])) if user_id in user_audios else 0
         
+        text += f"• <b>{cat}</b> — 🎬{video_count} видео, 🎵{audio_count} аудио\n"
+        
+        # Кнопки для категории
+        row = []
+        if video_count > 0:
+            row.append(InlineKeyboardButton(f"🎬 Видео", callback_data=f"view_videos_{cat}"))
+        if audio_count > 0:
+            row.append(InlineKeyboardButton(f"🎵 Аудио", callback_data=f"view_audios_{cat}"))
+        keyboard.append(row)
+        
+        # Кнопки управления
         keyboard.append([
-            InlineKeyboardButton(f"👁️ Смотреть ({count})", callback_data=f"view_{cat}"),
             InlineKeyboardButton(f"✏️ Переименовать", callback_data=f"rename_{cat}"),
             InlineKeyboardButton(f"🗑️ Удалить всё", callback_data=f"delete_{cat}")
         ])
@@ -450,35 +423,62 @@ async def show_category_videos(update: Update, context: ContextTypes.DEFAULT_TYP
     """Показывает все видео в категории"""
     
     if cat_name not in user_videos[user_id] or not user_videos[user_id][cat_name]:
-        keyboard = [[InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")]]
         await update.callback_query.message.reply_text(
-            f"📁 <b>«{cat_name}»</b> — в категории нет видео",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            f"📁 <b>«{cat_name}»</b> — нет видео",
             parse_mode='HTML'
         )
         return
     
     videos = user_videos[user_id][cat_name]
-    text = f"📁 <b>«{cat_name}»</b> — {len(videos)} видео\n\n"
+    text = f"🎬 <b>Видео в «{cat_name}»</b> — {len(videos)} шт.\n\n"
     
     keyboard = []
     
     for i, video in enumerate(videos, 1):
         title = video['title'][:40] + "..." if len(video['title']) > 40 else video['title']
         size = video.get('size', 0)
-        audio = "🔊" if video.get('has_audio', True) else "🔇"
-        size_text = f" ({size:.1f}MB)" if size > 0 else ""
-        text += f"{i}. {title}{size_text} {audio}\n"
+        text += f"{i}. {title} ({size:.1f}MB)\n"
         
         keyboard.append([
-            InlineKeyboardButton(f"▶️ Смотреть {i}", callback_data=f"play_{cat_name}_{i-1}"),
+            InlineKeyboardButton(f"▶️ Смотреть {i}", callback_data=f"play_video_{cat_name}_{i-1}"),
             InlineKeyboardButton(f"🗑️ Удалить {i}", callback_data=f"delvideo_{cat_name}_{i-1}")
         ])
     
-    keyboard.append([
-        InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories"),
-        InlineKeyboardButton("📋 Команды", callback_data="show_commands")
-    ])
+    keyboard.append([InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")])
+    
+    await update.callback_query.message.reply_text(
+        text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+# ================== ПОКАЗ АУДИО В КАТЕГОРИИ ==================
+async def show_category_audios(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, cat_name):
+    """Показывает все аудио в категории"""
+    
+    if cat_name not in user_audios[user_id] or not user_audios[user_id][cat_name]:
+        await update.callback_query.message.reply_text(
+            f"📁 <b>«{cat_name}»</b> — нет аудио",
+            parse_mode='HTML'
+        )
+        return
+    
+    audios = user_audios[user_id][cat_name]
+    text = f"🎵 <b>Аудио в «{cat_name}»</b> — {len(audios)} шт.\n\n"
+    
+    keyboard = []
+    
+    for i, audio in enumerate(audios, 1):
+        title = audio['title'][:40] + "..." if len(audio['title']) > 40 else audio['title']
+        size = audio.get('size', 0)
+        text += f"{i}. {title} ({size:.1f}MB)\n"
+        
+        keyboard.append([
+            InlineKeyboardButton(f"▶️ Слушать {i}", callback_data=f"play_audio_{cat_name}_{i-1}"),
+            InlineKeyboardButton(f"🗑️ Удалить {i}", callback_data=f"delaudio_{cat_name}_{i-1}")
+        ])
+    
+    keyboard.append([InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")])
     
     await update.callback_query.message.reply_text(
         text,
@@ -495,9 +495,9 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     
-    if data.startswith("play_"):
+    if data.startswith("play_video_"):
         parts = data.split('_')
-        cat_name = '_'.join(parts[1:-1])
+        cat_name = '_'.join(parts[2:-1])
         index = int(parts[-1])
         
         if (user_id in user_videos and 
@@ -507,102 +507,88 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             video = user_videos[user_id][cat_name][index]
             
             if os.path.exists(video['path']):
-                audio_status = "🔊 со звуком" if video.get('has_audio', True) else "🔇 без звука"
                 with open(video['path'], 'rb') as f:
                     await query.message.reply_video(
                         video=f,
-                        caption=f"🎬 <b>{video['title'][:50]}</b>\n"
-                                f"📁 Категория: {cat_name}\n"
-                                f"{audio_status}",
-                        parse_mode='HTML',
-                        supports_streaming=True
+                        caption=f"🎬 <b>{video['title'][:50]}</b>",
+                        parse_mode='HTML'
                     )
-            else:
-                await query.message.reply_text("❌ <b>Видео не найдено на диске</b>", parse_mode='HTML')
 
-# ================== УДАЛЕНИЕ КАТЕГОРИИ ==================
-async def delete_category(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, cat_name):
-    """Удаляет категорию и все видео в ней"""
+# ================== ВОСПРОИЗВЕДЕНИЕ АУДИО ==================
+async def play_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет аудио из категории"""
+    query = update.callback_query
+    await query.answer()
     
-    if cat_name in user_categories[user_id]:
-        user_categories[user_id].remove(cat_name)
+    user_id = query.from_user.id
+    data = query.data
     
-    if cat_name in user_videos[user_id]:
-        for video in user_videos[user_id][cat_name]:
-            try:
-                if os.path.exists(video['path']):
-                    os.remove(video['path'])
-            except:
-                pass
-        del user_videos[user_id][cat_name]
+    if data.startswith("play_audio_"):
+        parts = data.split('_')
+        cat_name = '_'.join(parts[2:-1])
+        index = int(parts[-1])
+        
+        if (user_id in user_audios and 
+            cat_name in user_audios[user_id] and 
+            index < len(user_audios[user_id][cat_name])):
+            
+            audio = user_audios[user_id][cat_name][index]
+            
+            if os.path.exists(audio['path']):
+                with open(audio['path'], 'rb') as f:
+                    await query.message.reply_audio(
+                        audio=f,
+                        title=audio['title'][:50],
+                        caption=f"🎵 <b>Аудио</b>",
+                        parse_mode='HTML'
+                    )
+
+# ================== МЕНЮ КОМАНД ==================
+async def show_commands_menu(query):
+    """Показывает меню со всеми командами"""
     
-    keyboard = [[InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")]]
-    
-    await update.callback_query.message.reply_text(
-        f"🗑️ <b>Категория «{cat_name}» удалена</b>",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML'
+    commands_text = (
+        "📋 <b>ВСЕ КОМАНДЫ БОТА</b>\n\n"
+        
+        "🔹 <b>ОСНОВНЫЕ:</b>\n"
+        "• /start - Главное меню\n"
+        "• /help - Подробная помощь\n"
+        "• /commands - Это меню\n\n"
+        
+        "🔹 <b>КАТЕГОРИИ:</b>\n"
+        "• /categories - Управление категориями\n"
+        "• /stats - Моя статистика\n\n"
+        
+        "🔹 <b>БЫСТРЫЕ ДЕЙСТВИЯ:</b>\n"
+        "• Отправь ссылку - скачать видео\n"
+        "• Бот пришлет видео, потом отдельно аудио\n"
+        "• Выбери категорию для сохранения\n\n"
+        
+        "🔹 <b>ПРИМЕРЫ ССЫЛОК:</b>\n"
+        "• Instagram: instagram.com/reel/...\n"
+        "• TikTok: tiktok.com/@user/video/...\n"
+        "• YouTube: youtu.be/...\n"
+        "• Pinterest: pin.it/...\n\n"
+        
+        "🔹 <b>ФОРМАТ:</b>\n"
+        "• Видео: MP4\n"
+        "• Аудио: MP3 (192 kbps)\n\n"
+        
+        "❓ <b>Нужна помощь?</b> Напиши /help"
     )
-
-# ================== ОБРАБОТКА ТЕКСТА ==================
-async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обрабатывает текстовые сообщения"""
-    user_id = update.effective_user.id
-    text = update.message.text.strip()
     
-    if context.user_data.get('waiting_for_category'):
-        if user_id not in user_categories:
-            user_categories[user_id] = []
-        
-        if text not in user_categories[user_id]:
-            user_categories[user_id].append(text)
-            
-            current_video = context.user_data.get('current_video')
-            if current_video:
-                if text not in user_videos[user_id]:
-                    user_videos[user_id][text] = []
-                user_videos[user_id][text].append(current_video)
-                await update.message.reply_text(
-                    f"✅ <b>Категория «{text}» создана!</b>\n🎬 Видео сохранено",
-                    parse_mode='HTML'
-                )
-                context.user_data.pop('current_video', None)
-            else:
-                await update.message.reply_text(
-                    f"✅ <b>Категория «{text}» создана!</b>",
-                    parse_mode='HTML'
-                )
-        else:
-            await update.message.reply_text(
-                f"❌ <b>Категория «{text}» уже существует</b>",
-                parse_mode='HTML'
-            )
-        
-        context.user_data['waiting_for_category'] = False
+    keyboard = [
+        [InlineKeyboardButton("📁 К категориям", callback_data="go_to_categories")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]
+    ]
     
-    elif context.user_data.get('waiting_for_rename'):
-        old_name = context.user_data.get('rename_category')
-        new_name = text
-        
-        if user_id in user_categories and old_name in user_categories[user_id]:
-            index = user_categories[user_id].index(old_name)
-            user_categories[user_id][index] = new_name
-            
-            if user_id in user_videos and old_name in user_videos[user_id]:
-                user_videos[user_id][new_name] = user_videos[user_id].pop(old_name)
-            
-            await update.message.reply_text(
-                f"✏️ <b>Категория переименована</b>\n«{old_name}» → «{new_name}»",
-                parse_mode='HTML'
-            )
-        else:
-            await update.message.reply_text("❌ <b>Категория не найдена</b>", parse_mode='HTML')
-        
-        context.user_data['waiting_for_rename'] = False
-        context.user_data.pop('rename_category', None)
-    
-    else:
-        await handle_link(update, context)
+    await query.edit_message_text(
+        commands_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML',
+        disable_web_page_preview=True
+    )
 
 # ================== СТАТИСТИКА ==================
 async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -611,29 +597,22 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     total_categories = len(user_categories.get(user_id, []))
     total_videos = 0
-    videos_with_audio = 0
+    total_audios = 0
     
     if user_id in user_videos:
         for cat in user_videos[user_id]:
-            for video in user_videos[user_id][cat]:
-                total_videos += 1
-                if video.get('has_audio', True):
-                    videos_with_audio += 1
+            total_videos += len(user_videos[user_id][cat])
     
-    files = glob.glob(f'downloads/{user_id}/*.mp4')
-    total_size = 0
-    for f in files:
-        total_size += os.path.getsize(f)
-    
-    size_mb = total_size / (1024 * 1024)
+    if user_id in user_audios:
+        for cat in user_audios[user_id]:
+            total_audios += len(user_audios[user_id][cat])
     
     stats_text = (
         f"📊 <b>Ваша статистика:</b>\n\n"
         f"📁 Категорий: {total_categories}\n"
-        f"🎬 Всего видео: {total_videos}\n"
-        f"🔊 Со звуком: {videos_with_audio}\n"
-        f"💾 Занято места: {size_mb:.1f} MB\n"
-        f"📦 Файлов на диске: {len(files)}"
+        f"🎬 Видео: {total_videos}\n"
+        f"🎵 Аудио: {total_audios}\n"
+        f"📦 Всего файлов: {total_videos + total_audios}"
     )
     
     keyboard = [
@@ -648,77 +627,87 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode='HTML'
     )
 
-# ================== ПОДРОБНАЯ ПОМОЩЬ ==================
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подробная помощь"""
-    help_text = (
-        "📱 <b>ПОДРОБНАЯ ПОМОЩЬ</b>\n\n"
-        
-        "🔹 <b>КАК СКАЧАТЬ ВИДЕО:</b>\n"
-        "1. Скопируйте ссылку на видео\n"
-        "2. Отправьте её боту\n"
-        "3. Дождитесь загрузки (10-30 секунд)\n"
-        "4. Выберите категорию для сохранения\n\n"
-        
-        "🔹 <b>ГДЕ БРАТЬ ССЫЛКИ:</b>\n"
-        "• Instagram: нажмите ⋮ → Скопировать ссылку\n"
-        "• TikTok: нажмите Поделиться → Копировать ссылку\n"
-        "• YouTube: скопируйте из адресной строки\n"
-        "• Pinterest: нажмите ⋮ → Скопировать ссылку\n\n"
-        
-        "🔹 <b>УПРАВЛЕНИЕ ВИДЕО:</b>\n"
-        "• /categories - открыть категории\n"
-        "• Нажмите «Смотреть» на категории\n"
-        "• Для каждого видео есть кнопки:\n"
-        "  ▶️ Смотреть - посмотреть видео\n"
-        "  🗑️ Удалить - удалить конкретное видео\n\n"
-        
-        "🔹 <b>ЗВУК:</b>\n"
-        "• Все видео скачиваются СО ЗВУКОМ!\n"
-        "• Если звука нет - видео может быть без звука\n"
-        "• TikTok видео объединяются автоматически\n\n"
-        
-        "🔹 <b>КОМАНДЫ:</b>\n"
-        "/start - Главное меню\n"
-        "/categories - Категории\n"
-        "/stats - Статистика\n"
-        "/commands - Список команд\n"
-        "/help - Эта помощь"
-    )
+# ================== ОБРАБОТКА ТЕКСТА ==================
+async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обрабатывает текстовые сообщения"""
+    user_id = update.effective_user.id
+    text = update.message.text.strip()
     
-    keyboard = [[InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_start")]]
+    if context.user_data.get('waiting_for_category_both'):
+        if user_id not in user_categories:
+            user_categories[user_id] = []
+        
+        if text not in user_categories[user_id]:
+            user_categories[user_id].append(text)
+            
+            # Сохраняем файлы в новую категорию
+            saved = []
+            
+            if 'current_video' in context.user_data:
+                if user_id not in user_videos:
+                    user_videos[user_id] = {}
+                if text not in user_videos[user_id]:
+                    user_videos[user_id][text] = []
+                user_videos[user_id][text].append(context.user_data['current_video'])
+                saved.append("видео")
+                context.user_data.pop('current_video', None)
+            
+            if 'current_audio' in context.user_data:
+                if user_id not in user_audios:
+                    user_audios[user_id] = {}
+                if text not in user_audios[user_id]:
+                    user_audios[user_id][text] = []
+                user_audios[user_id][text].append(context.user_data['current_audio'])
+                saved.append("аудио")
+                context.user_data.pop('current_audio', None)
+            
+            await update.message.reply_text(
+                f"✅ <b>Категория «{text}» создана!</b>\n"
+                f"Сохранено: {', '.join(saved)}",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text(
+                f"❌ <b>Категория «{text}» уже существует</b>",
+                parse_mode='HTML'
+            )
+        
+        context.user_data['waiting_for_category_both'] = False
     
-    await update.message.reply_text(
-        help_text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML'
-    )
-
-# ================== ВОЗВРАТ В ГЛАВНОЕ МЕНЮ ==================
-async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Возвращает в главное меню"""
-    query = update.callback_query
-    await query.answer()
+    elif context.user_data.get('waiting_for_rename'):
+        old_name = context.user_data.get('rename_category')
+        new_name = text
+        
+        if user_id in user_categories and old_name in user_categories[user_id]:
+            index = user_categories[user_id].index(old_name)
+            user_categories[user_id][index] = new_name
+            
+            # Переименовываем в видео
+            if user_id in user_videos and old_name in user_videos[user_id]:
+                user_videos[user_id][new_name] = user_videos[user_id].pop(old_name)
+            
+            # Переименовываем в аудио
+            if user_id in user_audios and old_name in user_audios[user_id]:
+                user_audios[user_id][new_name] = user_audios[user_id].pop(old_name)
+            
+            await update.message.reply_text(
+                f"✏️ <b>Категория переименована</b>\n«{old_name}» → «{new_name}»",
+                parse_mode='HTML'
+            )
+        else:
+            await update.message.reply_text("❌ <b>Категория не найдена</b>", parse_mode='HTML')
+        
+        context.user_data['waiting_for_rename'] = False
+        context.user_data.pop('rename_category', None)
     
-    keyboard = [
-        [InlineKeyboardButton("📋 Команды бота", callback_data="show_commands")],
-        [InlineKeyboardButton("📁 Мои категории", callback_data="go_to_categories")],
-        [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")]
-    ]
-    
-    await query.edit_message_text(
-        "👋 <b>Главное меню</b>\n\n"
-        "📱 Отправьте мне ссылку на видео\n"
-        "или выберите действие:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-        parse_mode='HTML'
-    )
+    else:
+        await handle_link(update, context)
 
 # ================== ЗАПУСК БОТА ==================
 def main():
     """Главная функция запуска"""
     print("🔄 Запуск бота...")
-    print("🎵 Режим: видео СО ЗВУКОМ")
+    print("🎬 Режим: видео + отдельно аудио")
     
     # Создаем папку для загрузок
     os.makedirs('downloads', exist_ok=True)
@@ -734,9 +723,9 @@ def main():
     app.add_handler(CommandHandler("stats", show_stats))
     
     # Кнопки
-    app.add_handler(CallbackQueryHandler(button_handler, pattern='^(save_|new_category|skip_save|back_to_categories|view_|rename_|delete_|go_to_categories|show_stats|show_commands|delvideo_)'))
-    app.add_handler(CallbackQueryHandler(play_video, pattern='^play_'))
-    app.add_handler(CallbackQueryHandler(back_to_start, pattern='^back_to_start$'))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern='^(show_commands|go_to_categories|show_stats|back_to_start|skip_all|new_category_both|back_to_save_options|choose_cat_|save_video_|save_audio_|save_both_|back_to_categories|view_videos_|view_audios_|rename_|delete_)$'))
+    app.add_handler(CallbackQueryHandler(play_video, pattern='^play_video_'))
+    app.add_handler(CallbackQueryHandler(play_audio, pattern='^play_audio_'))
     
     # Текст
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
@@ -744,7 +733,7 @@ def main():
     print("✅ Бот успешно запущен!")
     print("🤖 @SaveVideosInsbot")
     print("📁 /categories - управление категориями")
-    print("🎵 ВИДЕО СО ЗВУКОМ! 🔊")
+    print("🎬 Сначала видео, потом 🎵 аудио отдельно!")
     
     app.run_polling()
 
