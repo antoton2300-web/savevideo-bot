@@ -6,6 +6,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 import logging
 import glob
 import subprocess
+import time
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
@@ -55,21 +56,31 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Создаем папку для пользователя
         os.makedirs(f'downloads/{user_id}', exist_ok=True)
         
-        # ========== УЛУЧШЕННЫЕ НАСТРОЙКИ ДЛЯ СКАЧИВАНИЯ СО ЗВУКОМ ==========
+        # ==== ОПТИМАЛЬНЫЕ НАСТРОЙКИ ДЛЯ ВСЕХ ПЛАТФОРМ СО ЗВУКОМ ====
         ydl_opts = {
-            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',  # Явно берем видео и аудио
+            # Формат: лучшее видео + лучшее аудио, объединяем
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best',
             'outtmpl': f'downloads/{user_id}/%(title)s.%(ext)s',
             'quiet': True,
             'no_warnings': True,
             'socket_timeout': 30,
-            'retries': 3,
-            'merge_output_format': 'mp4',  # Объединяем в MP4
-            'postprocessors': [{  # Постобработка
+            'retries': 5,
+            
+            # Объединение видео и аудио
+            'merge_output_format': 'mp4',
+            'postprocessors': [{
                 'key': 'FFmpegVideoConvertor',
                 'preferedformat': 'mp4',
             }],
-            'prefer_ffmpeg': True,  # Используем ffmpeg
-            'keepvideo': True,  # Сохраняем оригинал
+            
+            # Дополнительные настройки для TikTok/Instagram
+            'prefer_ffmpeg': True,
+            'keepvideo': False,
+            'extract_flat': False,
+            'force_generic_extractor': False,
+            
+            # User-Agent как у браузера
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         }
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -77,80 +88,113 @@ async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
             info = ydl.extract_info(link, download=True)
             video_title = info.get('title', 'video')
             
-            # Ищем скачанный файл (MP4)
-            files = glob.glob(f'downloads/{user_id}/*.mp4')
+            # Даем время на объединение файлов
+            time.sleep(2)
             
-            if files:
-                filename = files[-1]  # Берем последний скачанный файл
-                
-                # Проверяем размер файла (должен быть больше 1MB)
+            # Ищем все возможные видео файлы
+            video_files = []
+            video_files.extend(glob.glob(f'downloads/{user_id}/*.mp4'))
+            video_files.extend(glob.glob(f'downloads/{user_id}/*.mkv'))
+            video_files.extend(glob.glob(f'downloads/{user_id}/*.webm'))
+            
+            if video_files:
+                # Берем самый свежий файл
+                filename = max(video_files, key=os.path.getctime)
                 file_size = os.path.getsize(filename) / (1024 * 1024)
-                logger.info(f"Файл скачан: {filename}, размер: {file_size:.2f} MB")
+                
+                # Проверяем есть ли звук в файле
+                has_audio = check_audio_in_video(filename)
+                logger.info(f"Файл: {filename}, размер: {file_size:.1f}MB, звук: {has_audio}")
+                
+                # Если нет звука, пробуем альтернативный метод
+                if not has_audio and 'tiktok' in link.lower():
+                    await msg.edit_text("🔄 <b>Пробую специальный метод для TikTok...</b>", parse_mode='HTML')
+                    
+                    # Специальные настройки для TikTok
+                    tiktok_opts = {
+                        'format': 'best',  # Просто лучшее что есть
+                        'outtmpl': f'downloads/{user_id}/tiktok_video.%(ext)s',
+                        'quiet': True,
+                        'socket_timeout': 30,
+                    }
+                    
+                    with yt_dlp.YoutubeDL(tiktok_opts) as ydl2:
+                        info2 = ydl2.extract_info(link, download=True)
+                        tiktok_files = glob.glob(f'downloads/{user_id}/tiktok_video.*')
+                        if tiktok_files:
+                            filename = tiktok_files[0]
+                            file_size = os.path.getsize(filename) / (1024 * 1024)
+                            has_audio = check_audio_in_video(filename)
                 
                 # Сохраняем информацию о видео
                 context.user_data['current_video'] = {
                     'path': filename,
                     'title': video_title,
                     'url': link,
-                    'size': file_size
+                    'size': file_size,
+                    'has_audio': has_audio
                 }
                 
                 # Отправляем видео
+                audio_status = "🔊 со звуком" if has_audio else "🔇 без звука"
                 with open(filename, 'rb') as f:
                     await update.message.reply_video(
                         video=f,
-                        caption=f"✅ <b>Видео скачано!</b>\n\n{video_title[:50]}\n💾 {file_size:.1f} MB",
+                        caption=f"✅ <b>Видео скачано!</b>\n\n"
+                                f"📹 {video_title[:50]}\n"
+                                f"💾 {file_size:.1f} MB\n"
+                                f"{audio_status}",
                         parse_mode='HTML',
-                        supports_streaming=True  # Важно для потокового видео
+                        supports_streaming=True
                     )
                 
                 await msg.delete()
-                
-                # ПОКАЗЫВАЕМ КНОПКИ ДЛЯ СОХРАНЕНИЯ
                 await show_save_options(update, context, user_id)
             else:
-                # Если MP4 не найден, ищем другие форматы
-                all_files = glob.glob(f'downloads/{user_id}/*')
-                if all_files:
-                    filename = all_files[-1]
-                    logger.warning(f"MP4 не найден, использую: {filename}")
-                    
-                    # Конвертируем в MP4 если нужно
-                    if not filename.endswith('.mp4'):
-                        mp4_filename = filename.rsplit('.', 1)[0] + '.mp4'
-                        try:
-                            # Пробуем сконвертировать
-                            cmd = ['ffmpeg', '-i', filename, '-c', 'copy', mp4_filename]
-                            subprocess.run(cmd, capture_output=True)
-                            if os.path.exists(mp4_filename):
-                                filename = mp4_filename
-                        except:
-                            pass
-                    
-                    with open(filename, 'rb') as f:
-                        await update.message.reply_video(
-                            video=f,
-                            caption=f"✅ <b>Видео скачано!</b>\n\n{video_title[:50]}",
-                            parse_mode='HTML'
-                        )
-                    
-                    await msg.delete()
-                    await show_save_options(update, context, user_id)
-                else:
-                    await msg.edit_text("❌ <b>Файл не найден</b>", parse_mode='HTML')
+                await msg.edit_text("❌ <b>Файл не найден</b>", parse_mode='HTML')
                 
     except Exception as e:
         error_text = str(e)
         logger.error(f"Ошибка скачивания: {error_text}")
         
-        if "ffmpeg" in error_text.lower():
-            await msg.edit_text("❌ <b>Ошибка ffmpeg</b>\nПроверьте установку на сервере", parse_mode='HTML')
-        elif "private" in error_text.lower():
-            await msg.edit_text("❌ <b>Это приватное видео</b>", parse_mode='HTML')
-        elif "unavailable" in error_text.lower():
-            await msg.edit_text("❌ <b>Видео недоступно</b>", parse_mode='HTML')
+        # Пробуем последний простой метод
+        if "ffmpeg" in error_text.lower() or "audio" in error_text.lower():
+            await msg.edit_text("🔄 <b>Пробую простой метод...</b>", parse_mode='HTML')
+            try:
+                simple_opts = {
+                    'format': 'best',
+                    'outtmpl': f'downloads/{user_id}/video.%(ext)s',
+                    'quiet': True,
+                }
+                with yt_dlp.YoutubeDL(simple_opts) as ydl:
+                    info = ydl.extract_info(link, download=True)
+                    files = glob.glob(f'downloads/{user_id}/*.mp4')
+                    if files:
+                        filename = files[-1]
+                        with open(filename, 'rb') as f:
+                            await update.message.reply_video(f, caption="✅ Видео скачано!")
+                        await msg.delete()
+                        await show_save_options(update, context, user_id)
+                    else:
+                        await msg.edit_text("❌ <b>Не удалось скачать</b>", parse_mode='HTML')
+            except:
+                await msg.edit_text("❌ <b>Видео недоступно</b>\nПроверьте ссылку", parse_mode='HTML')
         else:
             await msg.edit_text(f"❌ <b>Ошибка:</b> {error_text[:100]}", parse_mode='HTML')
+
+# ================== ПРОВЕРКА НАЛИЧИЯ ЗВУКА ==================
+def check_audio_in_video(filename):
+    """Проверяет есть ли аудио дорожка в видео"""
+    try:
+        cmd = [
+            'ffprobe', '-i', filename,
+            '-show_streams', '-select_streams', 'a',
+            '-loglevel', 'error'
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        return bool(result.stdout.strip())
+    except:
+        return False
 
 # ================== КНОПКИ СОХРАНЕНИЯ ==================
 async def show_save_options(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id):
@@ -339,6 +383,10 @@ async def show_commands_menu(query):
         "• YouTube: youtu.be/...\n"
         "• Pinterest: pin.it/...\n\n"
         
+        "🔹 <b>ЗВУК:</b>\n"
+        "• Все видео скачиваются СО ЗВУКОМ!\n"
+        "• TikTok видео объединяются автоматически\n\n"
+        
         "❓ <b>Нужна помощь?</b> Напиши /help"
     )
     
@@ -418,8 +466,9 @@ async def show_category_videos(update: Update, context: ContextTypes.DEFAULT_TYP
     for i, video in enumerate(videos, 1):
         title = video['title'][:40] + "..." if len(video['title']) > 40 else video['title']
         size = video.get('size', 0)
+        audio = "🔊" if video.get('has_audio', True) else "🔇"
         size_text = f" ({size:.1f}MB)" if size > 0 else ""
-        text += f"{i}. {title}{size_text}\n"
+        text += f"{i}. {title}{size_text} {audio}\n"
         
         keyboard.append([
             InlineKeyboardButton(f"▶️ Смотреть {i}", callback_data=f"play_{cat_name}_{i-1}"),
@@ -458,10 +507,13 @@ async def play_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
             video = user_videos[user_id][cat_name][index]
             
             if os.path.exists(video['path']):
+                audio_status = "🔊 со звуком" if video.get('has_audio', True) else "🔇 без звука"
                 with open(video['path'], 'rb') as f:
                     await query.message.reply_video(
                         video=f,
-                        caption=f"🎬 <b>{video['title'][:50]}</b>\n📁 Категория: {cat_name}",
+                        caption=f"🎬 <b>{video['title'][:50]}</b>\n"
+                                f"📁 Категория: {cat_name}\n"
+                                f"{audio_status}",
                         parse_mode='HTML',
                         supports_streaming=True
                     )
@@ -559,10 +611,14 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     total_categories = len(user_categories.get(user_id, []))
     total_videos = 0
+    videos_with_audio = 0
     
     if user_id in user_videos:
         for cat in user_videos[user_id]:
-            total_videos += len(user_videos[user_id][cat])
+            for video in user_videos[user_id][cat]:
+                total_videos += 1
+                if video.get('has_audio', True):
+                    videos_with_audio += 1
     
     files = glob.glob(f'downloads/{user_id}/*.mp4')
     total_size = 0
@@ -575,6 +631,7 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 <b>Ваша статистика:</b>\n\n"
         f"📁 Категорий: {total_categories}\n"
         f"🎬 Всего видео: {total_videos}\n"
+        f"🔊 Со звуком: {videos_with_audio}\n"
         f"💾 Занято места: {size_mb:.1f} MB\n"
         f"📦 Файлов на диске: {len(files)}"
     )
@@ -616,16 +673,17 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "  ▶️ Смотреть - посмотреть видео\n"
         "  🗑️ Удалить - удалить конкретное видео\n\n"
         
+        "🔹 <b>ЗВУК:</b>\n"
+        "• Все видео скачиваются СО ЗВУКОМ!\n"
+        "• Если звука нет - видео может быть без звука\n"
+        "• TikTok видео объединяются автоматически\n\n"
+        
         "🔹 <b>КОМАНДЫ:</b>\n"
         "/start - Главное меню\n"
         "/categories - Категории\n"
         "/stats - Статистика\n"
         "/commands - Список команд\n"
-        "/help - Эта помощь\n\n"
-        
-        "🎵 <b>ЗВУК:</b>\n"
-        "• Все видео скачиваются со звуком!\n"
-        "• Если звука нет - проверьте источник"
+        "/help - Эта помощь"
     )
     
     keyboard = [[InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_start")]]
@@ -660,6 +718,7 @@ async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     """Главная функция запуска"""
     print("🔄 Запуск бота...")
+    print("🎵 Режим: видео СО ЗВУКОМ")
     
     # Создаем папку для загрузок
     os.makedirs('downloads', exist_ok=True)
@@ -685,7 +744,7 @@ def main():
     print("✅ Бот успешно запущен!")
     print("🤖 @SaveVideosInsbot")
     print("📁 /categories - управление категориями")
-    print("🎵 ВИДЕО СО ЗВУКОМ!")
+    print("🎵 ВИДЕО СО ЗВУКОМ! 🔊")
     
     app.run_polling()
 
