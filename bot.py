@@ -23,18 +23,20 @@ user_videos = {}      # {user_id: {категория: [список видео]
 # ================== КОМАНДА СТАРТ ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Приветствие и инструкция"""
+    keyboard = [
+        [InlineKeyboardButton("📋 Команды бота", callback_data="show_commands")],
+        [InlineKeyboardButton("📁 Мои категории", callback_data="go_to_categories")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")]
+    ]
+    
     await update.message.reply_text(
         "👋 <b>Привет! Я бот для скачивания видео</b>\n\n"
         "📱 <b>Что я умею:</b>\n"
-        "• Скачивать видео из Instagram, TikTok, Pinterest\n"
+        "• Скачивать видео из Instagram, TikTok, Pinterest, YouTube\n"
         "• Сохранять видео в категории\n"
-        "• Управлять категориями (создание/удаление/переименование)\n"
-        "• Показывать статистику\n\n"
-        "📁 <b>Команды:</b>\n"
-        "/start - Начать работу\n"
-        "/categories - Управление категориями\n"
-        "/stats - Моя статистика\n"
-        "/help - Помощь",
+        "• Управлять категориями\n\n"
+        "🔽 <b>Выберите действие:</b>",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
     )
 
@@ -123,6 +125,9 @@ async def show_save_options(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         InlineKeyboardButton("⏭ Пропустить", callback_data="skip_save")
     ])
     
+    # Кнопка помощи
+    keyboard.append([InlineKeyboardButton("❓ Помощь", callback_data="show_commands")])
+    
     await update.message.reply_text(
         "💾 <b>Сохранить видео?</b>\n\n"
         "Выберите категорию или создайте новую:",
@@ -139,7 +144,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = query.from_user.id
     data = query.data
     
-    # Удаляем сообщение с кнопками
+    # КОМАНДЫ (не удаляем сообщение)
+    if data == "show_commands":
+        await show_commands_menu(query)
+        return
+    
+    elif data == "go_to_categories":
+        await query.message.delete()
+        await show_categories(update, context)
+        return
+    
+    elif data == "show_stats":
+        await query.message.delete()
+        await show_stats(update, context)
+        return
+    
+    # Удаляем сообщение с кнопками для остальных действий
     await query.message.delete()
     
     # ===== СОХРАНЕНИЕ ВИДЕО =====
@@ -196,15 +216,62 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cat_name = data[7:]
         await delete_category(update, context, user_id, cat_name)
 
+# ================== МЕНЮ КОМАНД ==================
+async def show_commands_menu(query):
+    """Показывает меню со всеми командами"""
+    
+    commands_text = (
+        "📋 <b>ВСЕ КОМАНДЫ БОТА</b>\n\n"
+        
+        "🔹 <b>ОСНОВНЫЕ:</b>\n"
+        "/start - Главное меню\n"
+        "/help - Подробная помощь\n"
+        "/commands - Это меню\n\n"
+        
+        "🔹 <b>КАТЕГОРИИ:</b>\n"
+        "/categories - Управление категориями\n"
+        "/stats - Моя статистика\n\n"
+        
+        "🔹 <b>БЫСТРЫЕ ДЕЙСТВИЯ:</b>\n"
+        "• Отправь ссылку - скачать видео\n"
+        "• После скачивания выбери категорию\n"
+        "• В /categories можно удалять/переименовывать\n\n"
+        
+        "🔹 <b>ПРИМЕРЫ ССЫЛОК:</b>\n"
+        "• https://www.instagram.com/reel/...\n"
+        "• https://vt.tiktok.com/...\n"
+        "• https://youtu.be/...\n"
+        "• https://pin.it/...\n\n"
+        
+        "❓ <b>Нужна помощь?</b> Напиши /help"
+    )
+    
+    keyboard = [
+        [InlineKeyboardButton("📁 К категориям", callback_data="go_to_categories")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")],
+        [InlineKeyboardButton("◀️ Назад", callback_data="back_to_start")]
+    ]
+    
+    await query.edit_message_text(
+        commands_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
 # ================== ПОКАЗ КАТЕГОРИЙ ==================
 async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает все категории с кнопками управления"""
     user_id = update.effective_user.id
     
     if user_id not in user_categories or not user_categories[user_id]:
+        keyboard = [
+            [InlineKeyboardButton("📋 Команды", callback_data="show_commands")],
+            [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_start")]
+        ]
         await update.message.reply_text(
             "📁 <b>У вас пока нет категорий</b>\n\n"
             "Отправьте видео и создайте первую категорию!",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )
         return
@@ -224,7 +291,11 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(f"🗑️ Удалить", callback_data=f"delete_{cat}")
         ])
     
-    text += "\n<i>Выберите действие для категории:</i>"
+    # Добавляем навигационные кнопки
+    keyboard.append([
+        InlineKeyboardButton("📋 Команды", callback_data="show_commands"),
+        InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_start")
+    ])
     
     await update.message.reply_text(
         text,
@@ -237,8 +308,10 @@ async def show_category_videos(update: Update, context: ContextTypes.DEFAULT_TYP
     """Показывает все видео в категории"""
     
     if cat_name not in user_videos[user_id] or not user_videos[user_id][cat_name]:
+        keyboard = [[InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")]]
         await update.callback_query.message.reply_text(
             f"📁 <b>«{cat_name}»</b> — в категории нет видео",
+            reply_markup=InlineKeyboardMarkup(keyboard),
             parse_mode='HTML'
         )
         return
@@ -259,8 +332,11 @@ async def show_category_videos(update: Update, context: ContextTypes.DEFAULT_TYP
             callback_data=f"play_{cat_name}_{i-1}"
         )])
     
-    # Кнопка назад
-    keyboard.append([InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")])
+    # Кнопки навигации
+    keyboard.append([
+        InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories"),
+        InlineKeyboardButton("📋 Команды", callback_data="show_commands")
+    ])
     
     await update.callback_query.message.reply_text(
         text,
@@ -317,8 +393,11 @@ async def delete_category(update: Update, context: ContextTypes.DEFAULT_TYPE, us
                 pass
         del user_videos[user_id][cat_name]
     
+    keyboard = [[InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")]]
+    
     await update.callback_query.message.reply_text(
         f"🗑️ <b>Категория «{cat_name}» удалена</b>",
+        reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
     )
 
@@ -423,44 +502,76 @@ async def show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📦 Файлов на диске: {len(files)}"
     )
     
-    await update.message.reply_text(stats_text, parse_mode='HTML')
+    keyboard = [
+        [InlineKeyboardButton("📁 К категориям", callback_data="go_to_categories")],
+        [InlineKeyboardButton("📋 Команды", callback_data="show_commands")],
+        [InlineKeyboardButton("🏠 Главное меню", callback_data="back_to_start")]
+    ]
+    
+    await update.message.reply_text(
+        stats_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
 
-# ================== ПОМОЩЬ ==================
+# ================== ПОДРОБНАЯ ПОМОЩЬ ==================
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Подробная помощь"""
     help_text = (
-        "📱 <b>Помощь по боту</b>\n\n"
-        "<b>🔹 Основные команды:</b>\n"
-        "/start - Начать работу\n"
-        "/categories - Управление категориями\n"
-        "/stats - Моя статистика\n"
-        "/help - Эта справка\n\n"
+        "📱 <b>ПОДРОБНАЯ ПОМОЩЬ</b>\n\n"
         
-        "<b>🔹 Как пользоваться:</b>\n"
-        "1️⃣ Отправьте ссылку на видео\n"
-        "2️⃣ После загрузки выберите категорию\n"
-        "3️⃣ Видео сохранится в выбранную категорию\n\n"
+        "🔹 <b>КАК СКАЧАТЬ ВИДЕО:</b>\n"
+        "1. Скопируйте ссылку на видео\n"
+        "2. Отправьте её боту\n"
+        "3. Дождитесь загрузки\n"
+        "4. Выберите категорию для сохранения\n\n"
         
-        "<b>🔹 Управление категориями:</b>\n"
-        "• Нажмите /categories чтобы увидеть все категории\n"
-        "• Для каждой категории есть кнопки:\n"
-        "  👁️ Смотреть — показать все видео\n"
-        "  ✏️ Переименовать — изменить название\n"
-        "  🗑️ Удалить — удалить категорию с видео\n\n"
+        "🔹 <b>ГДЕ БРАТЬ ССЫЛКИ:</b>\n"
+        "• Instagram: нажмите ⋮ → Скопировать ссылку\n"
+        "• TikTok: нажмите Поделиться → Копировать ссылку\n"
+        "• YouTube: скопируйте из адресной строки\n"
+        "• Pinterest: нажмите ⋮ → Скопировать ссылку\n\n"
         
-        "<b>🔹 Поддерживаемые платформы:</b>\n"
-        "• Instagram (reels, посты)\n"
-        "• TikTok\n"
-        "• Pinterest\n"
-        "• YouTube\n\n"
+        "🔹 <b>УПРАВЛЕНИЕ КАТЕГОРИЯМИ:</b>\n"
+        "• /categories - открыть меню категорий\n"
+        "• Там можно смотреть, переименовывать, удалять\n"
+        "• Категории нужны для сортировки видео\n\n"
         
-        "<b>🔹 Советы:</b>\n"
-        "• Создавайте категории по темам (Музыка, Фильмы, Обучение)\n"
-        "• Используйте /stats чтобы следить за местом на диске\n"
-        "• Видео хранятся на сервере, но можно скачать в любой момент"
+        "🔹 <b>КОМАНДЫ:</b>\n"
+        "/start - Главное меню\n"
+        "/categories - Категории\n"
+        "/stats - Статистика\n"
+        "/commands - Список команд\n"
+        "/help - Эта помощь"
     )
     
-    await update.message.reply_text(help_text, parse_mode='HTML')
+    keyboard = [[InlineKeyboardButton("◀️ В главное меню", callback_data="back_to_start")]]
+    
+    await update.message.reply_text(
+        help_text,
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
+
+# ================== ВОЗВРАТ В ГЛАВНОЕ МЕНЮ ==================
+async def back_to_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возвращает в главное меню"""
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("📋 Команды бота", callback_data="show_commands")],
+        [InlineKeyboardButton("📁 Мои категории", callback_data="go_to_categories")],
+        [InlineKeyboardButton("📊 Статистика", callback_data="show_stats")]
+    ]
+    
+    await query.edit_message_text(
+        "👋 <b>Главное меню</b>\n\n"
+        "📱 Отправьте мне ссылку на видео\n"
+        "или выберите действие:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode='HTML'
+    )
 
 # ================== ЗАПУСК БОТА ==================
 def main():
@@ -476,12 +587,14 @@ def main():
     # Команды
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("commands", show_commands_menu))
     app.add_handler(CommandHandler("categories", show_categories))
     app.add_handler(CommandHandler("stats", show_stats))
     
     # Кнопки
-    app.add_handler(CallbackQueryHandler(button_handler, pattern='^(save_|new_category|skip_save|back_to_categories|view_|rename_|delete_)$'))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern='^(save_|new_category|skip_save|back_to_categories|view_|rename_|delete_|go_to_categories|show_stats|show_commands)$'))
     app.add_handler(CallbackQueryHandler(play_video, pattern='^play_'))
+    app.add_handler(CallbackQueryHandler(back_to_start, pattern='^back_to_start$'))
     
     # Текст
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler))
@@ -489,6 +602,7 @@ def main():
     print("✅ Бот успешно запущен!")
     print("🤖 @SaveVideosInsbot")
     print("📁 /categories - управление категориями")
+    print("📋 /commands - список команд")
     
     app.run_polling()
 
