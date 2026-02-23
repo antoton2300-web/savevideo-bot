@@ -34,7 +34,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📱 <b>Что я умею:</b>\n"
         "• Скачивать видео из Instagram, TikTok, Pinterest, YouTube\n"
         "• Сохранять видео в категории\n"
-        "• Управлять категориями\n\n"
+        "• Управлять категориями\n"
+        "• Удалять отдельные видео из категорий\n\n"
         "🔽 <b>Выберите действие:</b>",
         reply_markup=InlineKeyboardMarkup(keyboard),
         parse_mode='HTML'
@@ -215,6 +216,54 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("delete_"):
         cat_name = data[7:]
         await delete_category(update, context, user_id, cat_name)
+    
+    # ===== УДАЛЕНИЕ ОТДЕЛЬНОГО ВИДЕО =====
+    elif data.startswith("delvideo_"):
+        # Формат: delvideo_категория_индекс
+        parts = data.split('_')
+        cat_name = '_'.join(parts[1:-1])
+        index = int(parts[-1])
+        await delete_single_video(update, context, user_id, cat_name, index)
+
+# ================== УДАЛЕНИЕ ОДНОГО ВИДЕО ==================
+async def delete_single_video(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, cat_name, video_index):
+    """Удаляет одно конкретное видео из категории"""
+    
+    if (user_id in user_videos and 
+        cat_name in user_videos[user_id] and 
+        video_index < len(user_videos[user_id][cat_name])):
+        
+        # Получаем видео
+        video = user_videos[user_id][cat_name][video_index]
+        video_title = video['title']
+        
+        # Удаляем файл с диска
+        try:
+            if os.path.exists(video['path']):
+                os.remove(video['path'])
+        except:
+            pass
+        
+        # Удаляем из списка
+        user_videos[user_id][cat_name].pop(video_index)
+        
+        # Если категория стала пустой, предлагаем удалить её
+        if not user_videos[user_id][cat_name]:
+            keyboard = [
+                [InlineKeyboardButton(f"🗑️ Удалить пустую категорию", callback_data=f"delete_{cat_name}")],
+                [InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")]
+            ]
+            await update.callback_query.message.reply_text(
+                f"✅ <b>Видео «{video_title[:30]}» удалено</b>\n\n"
+                f"📁 Категория «{cat_name}» теперь пуста. Хотите удалить её?",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML'
+            )
+        else:
+            # Показываем обновленный список видео
+            await show_category_videos(update, context, user_id, cat_name)
+    else:
+        await update.callback_query.message.reply_text("❌ <b>Видео не найдено</b>", parse_mode='HTML')
 
 # ================== МЕНЮ КОМАНД ==================
 async def show_commands_menu(query):
@@ -235,7 +284,7 @@ async def show_commands_menu(query):
         "🔹 <b>БЫСТРЫЕ ДЕЙСТВИЯ:</b>\n"
         "• Отправь ссылку - скачать видео\n"
         "• После скачивания выбери категорию\n"
-        "• В /categories можно удалять/переименовывать\n\n"
+        "• В категории можно удалить любое видео\n\n"
         
         "🔹 <b>ПРИМЕРЫ ССЫЛОК:</b>\n"
         "• https://www.instagram.com/reel/...\n"
@@ -286,9 +335,9 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Кнопки для категории
         keyboard.append([
-            InlineKeyboardButton(f"👁️ Смотреть", callback_data=f"view_{cat}"),
+            InlineKeyboardButton(f"👁️ Смотреть ({count})", callback_data=f"view_{cat}"),
             InlineKeyboardButton(f"✏️ Переименовать", callback_data=f"rename_{cat}"),
-            InlineKeyboardButton(f"🗑️ Удалить", callback_data=f"delete_{cat}")
+            InlineKeyboardButton(f"🗑️ Удалить всё", callback_data=f"delete_{cat}")
         ])
     
     # Добавляем навигационные кнопки
@@ -305,7 +354,7 @@ async def show_categories(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ================== ПОКАЗ ВИДЕО В КАТЕГОРИИ ==================
 async def show_category_videos(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id, cat_name):
-    """Показывает все видео в категории"""
+    """Показывает все видео в категории с кнопками для удаления каждого"""
     
     if cat_name not in user_videos[user_id] or not user_videos[user_id][cat_name]:
         keyboard = [[InlineKeyboardButton("◀️ Назад к категориям", callback_data="back_to_categories")]]
@@ -323,14 +372,14 @@ async def show_category_videos(update: Update, context: ContextTypes.DEFAULT_TYP
     
     for i, video in enumerate(videos, 1):
         # Обрезаем длинное название
-        title = video['title'][:30] + "..." if len(video['title']) > 30 else video['title']
+        title = video['title'][:40] + "..." if len(video['title']) > 40 else video['title']
         text += f"{i}. {title}\n"
         
-        # Кнопка для просмотра видео
-        keyboard.append([InlineKeyboardButton(
-            f"▶️ Смотреть видео {i}", 
-            callback_data=f"play_{cat_name}_{i-1}"
-        )])
+        # Кнопки для каждого видео: смотреть и удалить
+        keyboard.append([
+            InlineKeyboardButton(f"▶️ Смотреть {i}", callback_data=f"play_{cat_name}_{i-1}"),
+            InlineKeyboardButton(f"🗑️ Удалить {i}", callback_data=f"delvideo_{cat_name}_{i-1}")
+        ])
     
     # Кнопки навигации
     keyboard.append([
@@ -384,7 +433,7 @@ async def delete_category(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     
     # Удаляем видео
     if cat_name in user_videos[user_id]:
-        # Опционально: удаляем файлы с диска
+        # Удаляем файлы с диска
         for video in user_videos[user_id][cat_name]:
             try:
                 if os.path.exists(video['path']):
@@ -532,10 +581,16 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• YouTube: скопируйте из адресной строки\n"
         "• Pinterest: нажмите ⋮ → Скопировать ссылку\n\n"
         
+        "🔹 <b>УПРАВЛЕНИЕ ВИДЕО:</b>\n"
+        "• /categories - открыть категории\n"
+        "• Нажмите «Смотреть» на категории\n"
+        "• Для каждого видео есть кнопки:\n"
+        "  ▶️ Смотреть - посмотреть видео\n"
+        "  🗑️ Удалить - удалить конкретное видео\n\n"
+        
         "🔹 <b>УПРАВЛЕНИЕ КАТЕГОРИЯМИ:</b>\n"
-        "• /categories - открыть меню категорий\n"
-        "• Там можно смотреть, переименовывать, удалять\n"
-        "• Категории нужны для сортировки видео\n\n"
+        "• ✏️ Переименовать - изменить название\n"
+        "• 🗑️ Удалить всё - удалить категорию со всеми видео\n\n"
         
         "🔹 <b>КОМАНДЫ:</b>\n"
         "/start - Главное меню\n"
@@ -592,7 +647,7 @@ def main():
     app.add_handler(CommandHandler("stats", show_stats))
     
     # Кнопки
-    app.add_handler(CallbackQueryHandler(button_handler, pattern='^(save_|new_category|skip_save|back_to_categories|view_|rename_|delete_|go_to_categories|show_stats|show_commands)$'))
+    app.add_handler(CallbackQueryHandler(button_handler, pattern='^(save_|new_category|skip_save|back_to_categories|view_|rename_|delete_|go_to_categories|show_stats|show_commands|delvideo_)'))
     app.add_handler(CallbackQueryHandler(play_video, pattern='^play_'))
     app.add_handler(CallbackQueryHandler(back_to_start, pattern='^back_to_start$'))
     
@@ -603,6 +658,7 @@ def main():
     print("🤖 @SaveVideosInsbot")
     print("📁 /categories - управление категориями")
     print("📋 /commands - список команд")
+    print("🗑️ Теперь можно удалять отдельные видео!")
     
     app.run_polling()
 
