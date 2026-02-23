@@ -273,13 +273,13 @@ async def show_commands_menu(query):
         "📋 <b>ВСЕ КОМАНДЫ БОТА</b>\n\n"
         
         "🔹 <b>ОСНОВНЫЕ:</b>\n"
-        "/start - Главное меню\n"
-        "/help - Подробная помощь\n"
-        "/commands - Это меню\n\n"
+        "• /start - Главное меню\n"
+        "• /help - Подробная помощь\n"
+        "• /commands - Это меню\n\n"
         
         "🔹 <b>КАТЕГОРИИ:</b>\n"
-        "/categories - Управление категориями\n"
-        "/stats - Моя статистика\n\n"
+        "• /categories - Управление категориями\n"
+        "• /stats - Моя статистика\n\n"
         
         "🔹 <b>БЫСТРЫЕ ДЕЙСТВИЯ:</b>\n"
         "• Отправь ссылку - скачать видео\n"
@@ -287,10 +287,10 @@ async def show_commands_menu(query):
         "• В категории можно удалить любое видео\n\n"
         
         "🔹 <b>ПРИМЕРЫ ССЫЛОК:</b>\n"
-        "• https://www.instagram.com/reel/...\n"
-        "• https://vt.tiktok.com/...\n"
-        "• https://youtu.be/...\n"
-        "• https://pin.it/...\n\n"
+        "• Instagram: https://www.instagram.com/reel/...\n"
+        "• TikTok: https://vt.tiktok.com/...\n"
+        "• YouTube: https://youtu.be/...\n"
+        "• Pinterest: https://pin.it/...\n\n"
         
         "❓ <b>Нужна помощь?</b> Напиши /help"
     )
@@ -664,3 +664,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
